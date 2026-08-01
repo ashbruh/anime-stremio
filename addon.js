@@ -16,7 +16,12 @@ const apiClient = new HanimeApiClient(config);
 const userApiManager = new UserApiManager();
 const catalogHandler = new CatalogHandler(apiClient, logger, config);
 const metaHandler = new MetaHandler(apiClient, logger, config);
-const streamHandler = new StreamHandler(apiClient, logger, config, userApiManager);
+const streamHandler = new StreamHandler(logger, config, userApiManager);
+
+// Pre-warm the stream signature module (boots a WASM sandbox, ~2-3s) so the
+// first stream request doesn't pay the cost. Non-blocking; failures are logged
+// by the service and simply mean the first request warms it lazily instead.
+require('./lib/services/htv_signature_service').init().catch(() => {});
 
 const manifest = {
   id: config.addon.id,
@@ -41,43 +46,61 @@ const manifest = {
     }
   ],
   catalogs: [
-    // Anime catalogs
+    // Anime catalogs.
+    //
+    // The brand list (~1,900 bytes) is only attached to catalogs where
+    // discovery filtering matters most — main Hanime and Uncensored.
+    // The four sort-only catalogs (Recent / Most Likes / Most Views /
+    // Newest) drop the genre dropdown entirely to keep the manifest
+    // under Stremio's 8 KB ceiling.
+    //
+    // `search` is intentionally only declared on the main Hanime catalog
+    // and the Series catalog. Stremio only routes search queries to
+    // catalogs that advertise `search` in their extras, so a single query
+    // produces one anime row + one series row instead of five duplicate
+    // rows of identical hits across the sort and uncensored catalogs.
     {
       type: constants.contentTypes.ANIME,
       name: 'Hanime',
       id: constants.catalogCategories.HANIME,
-      extra: constants.catalogExtras
+      extra: constants.catalogExtrasWithBrands
     },
     {
       type: constants.contentTypes.ANIME,
       name: 'Hanime Recent',
       id: constants.catalogCategories.RECENT,
-      extra: constants.catalogExtras
+      extra: constants.catalogExtrasSortOnly
     },
     {
       type: constants.contentTypes.ANIME,
       name: 'Hanime Most Likes',
       id: constants.catalogCategories.MOST_LIKES,
-      extra: constants.catalogExtras
+      extra: constants.catalogExtrasSortOnly
     },
     {
       type: constants.contentTypes.ANIME,
       name: 'Hanime Most Views',
       id: constants.catalogCategories.MOST_VIEWS,
-      extra: constants.catalogExtras
+      extra: constants.catalogExtrasSortOnly
     },
     {
       type: constants.contentTypes.ANIME,
       name: 'Hanime Newest',
       id: constants.catalogCategories.NEWEST,
-      extra: constants.catalogExtras
+      extra: constants.catalogExtrasSortOnly
     },
-    // Series catalogs
+    {
+      type: constants.contentTypes.ANIME,
+      name: 'Hanime Uncensored',
+      id: constants.catalogCategories.UNCENSORED,
+      extra: constants.catalogExtrasUncensored
+    },
+    // Series catalogs — minimal extras to keep manifest under 8 KB.
     {
       type: constants.contentTypes.SERIES,
       name: 'Hanime Series',
       id: constants.catalogCategories.SERIES,
-      extra: constants.catalogExtras
+      extra: constants.catalogExtrasMinimal
     }
   ],
   resources: ['catalog', 'stream', 'meta'],

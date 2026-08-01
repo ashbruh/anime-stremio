@@ -14,6 +14,7 @@ const config = require('./lib/config');
 const logger = require('./lib/logger');
 const addonInterface = require('./addon');
 const apiClient = addonInterface.apiClient; // Get the shared apiClient instance
+const userApiManager = addonInterface.userApiManager;
 const createImageProxyMiddleware = require('./lib/middleware/proxy_image_middleware');
 const { 
   createGeneralRateLimiter, 
@@ -70,18 +71,28 @@ process.on('uncaughtException', (err) => {
 /**
  * Request logging middleware
  */
+// Stremio embeds the user's {email,password} JSON as the first path segment,
+// so req.path must never be logged verbatim — redact that segment to keep
+// plaintext credentials out of the logs.
+function redactPath(p) {
+  return String(p).replace(/\/(%7[bB]|\{)[^/]*/, '/<config>');
+}
+
 function requestLogger(req, res, next) {
   const start = Date.now();
+  const path = redactPath(req.path);
 
-  logger.info(`${req.method} ${req.path}`, {
-    ip: req.ip || req.connection.remoteAddress,
+  // Only the finish line is logged at info (it carries status + duration and
+  // subsumes the entry line); the entry line stays at debug to halve per-
+  // request log volume in production.
+  logger.debug(`-> ${req.method} ${path}`, {
     userAgent: req.get('user-agent')?.substring(0, 50) || 'unknown'
   });
 
   res.on('finish', () => {
     const duration = Date.now() - start;
     const level = res.statusCode >= 400 ? 'error' : 'info';
-    logger[level](`${req.method} ${req.path} - ${res.statusCode}`, {
+    logger[level](`${req.method} ${path} - ${res.statusCode}`, {
       duration: `${duration}ms`,
       status: res.statusCode
     });
@@ -173,6 +184,26 @@ function serveHTTP(addonInterface, opts = {}) {
       res.end(landingHTML);
     });
   }
+
+  // Credentials verification endpoint used by the configure page.
+  // POSTs {email, password} → tries to authenticate against Hanime; on
+  // success the session is cached so the subsequent stream call reuses it.
+  app.post('/verify', express.json({ limit: '4kb' }), async (req, res) => {
+    const { email, password } = req.body || {};
+    if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ ok: false, error: 'Email and password are required.' });
+    }
+    try {
+      const userApi = await userApiManager.getUserApi(email, password);
+      return res.json({ ok: true, isPremium: !!userApi.isPremium });
+    } catch (err) {
+      logger.warn('Credential verification failed', {
+        emailPrefix: email.substring(0, 3) + '***',
+        error: err && err.message ? err.message : String(err)
+      });
+      return res.status(401).json({ ok: false, error: 'Invalid credentials or upstream error.' });
+    }
+  });
 
   app.use(getRouter(addonInterface));
 
