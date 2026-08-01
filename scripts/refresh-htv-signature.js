@@ -22,6 +22,10 @@ const VENDORED = path.join(__dirname, '..', 'lib', 'vendor', 'htv_signature_wasm
 
 async function main() {
   const slug = process.argv[2] || 'bible-black-6';
+  if (!/^[a-zA-Z0-9_-]+$/.test(slug)) {
+    console.error('Invalid slug:', slug);
+    process.exit(1);
+  }
   const pageUrl = `https://hanime.tv/videos/hentai/${slug}`;
   console.log('Fetching video page:', pageUrl);
   const page = await axios.get(pageUrl, { headers: { 'user-agent': UA, referer: 'https://hanime.tv/' } });
